@@ -70,11 +70,20 @@ async def main():
     logger.info("-------------------------------------------")
 
     try:
-        # chat_join_request va chat_member eventlarini olish uchun allowed_updates
-        # aniq ko'rsatilishi shart (TZ 5-bo'lim talabi)
+        # Eski navbatda qolgan spam yoki boshqa xabarlarni to'liq tozalash
+        await bot.delete_webhook(drop_pending_updates=True)
+
+        # chat_join_request, chat_member va media xabarlarini olish uchun allowed_updates
         await dp.start_polling(
             bot,
-            allowed_updates=["message", "chat_member", "chat_join_request", "callback_query"],
+            allowed_updates=[
+                "message",
+                "edited_message",
+                "chat_member",
+                "chat_join_request",
+                "callback_query",
+            ],
+            drop_pending_updates=True,
         )
     finally:
         scheduler.shutdown(wait=False)
