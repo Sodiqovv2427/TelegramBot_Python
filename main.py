@@ -39,7 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PlanningME_bot")
 
-@dp.errors()
+@errors()
 async def global_error_handler(event: ErrorEvent):
     logger.exception(
         "❌ XATOLIK: %s | update_id=%s",
@@ -66,6 +66,32 @@ async def set_bot_commands(bot: Bot):
 async def main():
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
+    
+async def main():
+    bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher(storage=MemoryStorage())
+
+    db_pool = await create_db_pool()
+    await init_db(db_pool)
+
+    dp.update.middleware(DbSessionMiddleware(db_pool))
+    dp.include_router(main_router)
+
+    # 👇 shu yerga qo'shing — dp allaqachon mavjud
+    from aiogram.types import ErrorEvent
+
+    @dp.errors()
+    async def global_error_handler(event: ErrorEvent):
+        logger.exception(
+            "❌ XATOLIK: %s | update_id=%s",
+            event.exception,
+            event.update.update_id,
+            exc_info=event.exception,
+        )
+        return True
+
+    await set_bot_commands(bot)
+    ...
 
     db_pool = await create_db_pool()
     await init_db(db_pool)
