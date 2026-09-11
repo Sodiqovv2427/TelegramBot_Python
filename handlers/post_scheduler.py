@@ -2,9 +2,6 @@
 Module 3: Scheduled Post & Inline Keyboard Builder (FSM)
 
 Oqim: /newpost -> kanal tanlash -> kontent -> (ixtiyoriy) tugmalar -> vaqt -> tasdiqlash
-
-Eslatma: bu oqim faqat KANALLAR uchun (chat_type='channel') — tugma nomi "✍️ Yangi post
-(Kanalga)" bo'lgani uchun guruhlar ro'yxatga qo'shilmaydi.
 """
 
 import logging
@@ -30,6 +27,9 @@ from states import PostCreation
 
 logger = logging.getLogger("PlanningME_bot")
 router = Router(name="post_scheduler")
+
+# Post yaratish oqimi faqat shaxsiy chatda boshlanishi va davom etishi kerak (guruh/kanalda emas)
+router.message.filter(F.chat.type == "private")
 
 RELATIVE_TIME_RE = re.compile(r"^in\s+(\d+)\s*(m|min|h|hour|d|day)s?$", re.IGNORECASE)
 
@@ -62,7 +62,7 @@ def parse_publish_time(raw: str) -> datetime | None:
 
 async def _start_new_post(db_pool: asyncpg.Pool, user_id: int, state: FSMContext, answer_func):
     """/newpost buyrug'i va ✍️ tezkor tugma bir xil oqimni boshlashi uchun umumiy logika."""
-    channels = await db.get_user_channels(db_pool, user_id, chat_type="channel")
+    channels = await db.get_user_channels(db_pool, user_id)
     if not channels:
         await answer_func(
             "Sizda ulangan kanal yo'q. Avval botni kanalingizga admin qilib qo'shing."
@@ -74,12 +74,6 @@ async def _start_new_post(db_pool: asyncpg.Pool, user_id: int, state: FSMContext
 
 @router.message(Command("newpost"))
 async def start_new_post(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
-    await _start_new_post(db_pool, message.from_user.id, state, message.answer)
-
-
-@router.message(F.text == "✍️ Yangi post (Kanalga)")
-async def reply_btn_newpost(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
-    """Persistent reply-keyboard'dagi '✍️ Yangi post (Kanalga)' tugmasi uchun."""
     await _start_new_post(db_pool, message.from_user.id, state, message.answer)
 
 
