@@ -23,7 +23,6 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
-from aiogram.types import ErrorEvent
 
 from config import config
 from database import create_db_pool, init_db
@@ -31,24 +30,12 @@ from middlewares import DbSessionMiddleware
 from handlers import main_router
 from scheduler import setup_scheduler
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("PlanningME_bot")
-
-@errors()
-async def global_error_handler(event: ErrorEvent):
-    logger.exception(
-        "❌ XATOLIK: %s | update_id=%s",
-        event.exception,
-        event.update.update_id,
-        exc_info=event.exception,
-    )
-    return True  # xato "hal qilindi" deb belgilanadi, bot davom etadi
-
 
 
 async def set_bot_commands(bot: Bot):
@@ -59,39 +46,11 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="newpost", description="Yangi post yaratish"),
     ]
     await bot.set_my_commands(commands)
-    
-    
 
 
 async def main():
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
-    
-async def main():
-    bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher(storage=MemoryStorage())
-
-    db_pool = await create_db_pool()
-    await init_db(db_pool)
-
-    dp.update.middleware(DbSessionMiddleware(db_pool))
-    dp.include_router(main_router)
-
-    # 👇 shu yerga qo'shing — dp allaqachon mavjud
-    from aiogram.types import ErrorEvent
-
-    @dp.errors()
-    async def global_error_handler(event: ErrorEvent):
-        logger.exception(
-            "❌ XATOLIK: %s | update_id=%s",
-            event.exception,
-            event.update.update_id,
-            exc_info=event.exception,
-        )
-        return True
-
-    await set_bot_commands(bot)
-    ...
 
     db_pool = await create_db_pool()
     await init_db(db_pool)
