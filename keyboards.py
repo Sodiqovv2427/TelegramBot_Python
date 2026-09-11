@@ -1,19 +1,14 @@
 from typing import Iterable
 
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-)
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 # ============ CALLBACK DATA SXEMALARI ============
 
 class ChannelCB(CallbackData, prefix="ch"):
-    action: str          # "open" | "toggle" | "back"
+    action: str          # "open" | "toggle" | "edit_welcome" | "back"
     channel_id: int
 
 
@@ -29,44 +24,31 @@ class BroadcastConfirmCB(CallbackData, prefix="bc"):
     action: str  # "confirm" | "cancel"
 
 
-# ============ Persistent 3x3 Reply Keyboard (9 ta asosiy menyu tugmasi) ============
+# Reply-keyboard tugma matnlari — broadcast.py shu aynan matnlar bilan taqqoslaydi (F.text == ...)
+CHANNEL_BROADCAST_BTN = "📣 Kanalga e'lon yuborish"
+GROUP_BROADCAST_BTN = "💬 Guruhga e'lon yuborish"
 
-def main_menu_kb() -> ReplyKeyboardMarkup:
-    """
-    /start yuborilganda ko'rsatiladigan doimiy (persistent) 3x3 grid reply klaviatura.
-    """
+
+# ============ Pastki (persistent) reply-keyboard ============
+
+def main_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     keyboard = [
-        [
-            KeyboardButton(text="📢 Mening kanallarim"),
-            KeyboardButton(text="💬 Mening guruhlarim"),
-            KeyboardButton(text="✍️ Yangi post (Kanalga)"),
-        ],
-        [
-            KeyboardButton(text="📣 Kanalga e'lon yuborish"),
-            KeyboardButton(text="💬 Guruhga e'lon yuborish"),
-            KeyboardButton(text="🛡 Guruh Guard (Sozlamalar)"),
-        ],
-        [
-            KeyboardButton(text="👥 Referal tizimi"),
-            KeyboardButton(text="📊 Statistika (Botniki)"),
-            KeyboardButton(text="⚙️ Sozlamalar"),
-        ],
+        [KeyboardButton(text="📢 Mening kanallarim"), KeyboardButton(text="✍️ Yangi post")],
+        [KeyboardButton(text="📊 Analitika"), KeyboardButton(text="⚙️ Sozlamalar")],
+        [KeyboardButton(text="👥 Referal"), KeyboardButton(text="ℹ️ Yordam")],
     ]
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+    if is_admin:
+        keyboard.append([KeyboardButton(text=CHANNEL_BROADCAST_BTN), KeyboardButton(text=GROUP_BROADCAST_BTN)])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, is_persistent=True)
 
 
 # ============ /start menyusi ============
 
 def start_menu_kb(bot_username: str) -> InlineKeyboardMarkup:
     """
-    /start javobiga qo'shiladigan inline klaviatura (3 ta tezkor amal):
-    - Kanalga qo'shish (startchannel deep-link)
-    - Guruhga qo'shish (startgroup deep-link)
-    - Bot haqida (FAQ) — callback_data orqali qo'llanma ko'rsatiladi
+    /start javobiga qo'shiladigan inline klaviatura:
+    - Kanal/guruhga to'g'ridan-to'g'ri qo'shish tugmalari (startchannel/startgroup deep-link)
+    - Tezkor amallar: Mening kanallarim / Yangi post
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -81,13 +63,14 @@ def start_menu_kb(bot_username: str) -> InlineKeyboardMarkup:
                 ),
             ],
             [
-                InlineKeyboardButton(text="ℹ️ Bot haqida (FAQ)", callback_data="btn_faq"),
+                InlineKeyboardButton(text="📋 Mening kanallarim", callback_data="btn_mychannels"),
+                InlineKeyboardButton(text="✍️ Yangi post", callback_data="btn_newpost"),
             ],
         ]
     )
 
 
-# ============ /mychats (kanallar VA guruhlar ro'yxati — bir xil ko'rinish) ============
+# ============ /mychannels ============
 
 def channels_list_kb(channels: Iterable) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -101,16 +84,15 @@ def channels_list_kb(channels: Iterable) -> InlineKeyboardMarkup:
 
 
 def channel_dashboard_kb(channel) -> InlineKeyboardMarkup:
-    """
-    Kanal/guruh boshqaruv paneli. Faqat auto-approve holatini ko'rsatuvchi/almashtiruvchi
-    tugma va orqaga qaytish mavjud — welcome-message tahrirlash funksiyasi olib tashlangan,
-    chunki join-request oqimi endi butunlay SILENT (foydalanuvchiga hech qanday DM yuborilmaydi).
-    """
     builder = InlineKeyboardBuilder()
     status = "🟢 Auto-approve: ON" if channel["auto_approve"] else "🔴 Auto-approve: OFF"
     builder.button(
         text=status,
         callback_data=ChannelCB(action="toggle", channel_id=channel["channel_id"]),
+    )
+    builder.button(
+        text="✏️ Welcome xabarni tahrirlash",
+        callback_data=ChannelCB(action="edit_welcome", channel_id=channel["channel_id"]),
     )
     builder.button(text="⬅️ Orqaga", callback_data=ChannelCB(action="back", channel_id=0))
     builder.adjust(1)
@@ -182,11 +164,11 @@ def json_to_inline_keyboard(data: list | None) -> InlineKeyboardMarkup | None:
     return builder.as_markup()
 
 
-# ============ Broadcast (📣 / 💬 e'lon yuborish) ============
+# ============ Broadcast tasdiqlash ============
 
-def broadcast_confirm_kb(target_count: int) -> InlineKeyboardMarkup:
+def broadcast_confirm_kb(count: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text=f"✅ Ha, {target_count} taga yuborish", callback_data=BroadcastConfirmCB(action="confirm"))
+    builder.button(text=f"✅ Ha, {count} taga yuborish", callback_data=BroadcastConfirmCB(action="confirm"))
     builder.button(text="❌ Bekor qilish", callback_data=BroadcastConfirmCB(action="cancel"))
     builder.adjust(1)
     return builder.as_markup()

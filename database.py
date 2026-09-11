@@ -5,11 +5,6 @@ passed to handlers via middleware".
 
 Handlerlar bevosita SQL yozmaydi — faqat shu fayldagi funksiyalarni chaqiradi.
 Bu SQL xatolarini bitta joyda tuzatish imkonini beradi va handlerlarni soddaligicha saqlaydi.
-
-PRODUCTION (Render/Railway): agar .env / platform environment'da DATABASE_URL mavjud bo'lsa,
-pool aynan shu connection string orqali ochiladi (host/port/user/password alohida kerak emas).
-Aks holda, config.py'dagi alohida DB_USER/DB_PASSWORD/DB_HOST/DB_PORT/DB_NAME ishlatiladi
-(lokal development uchun qulay).
 """
 
 import json
@@ -35,29 +30,26 @@ async def _init_connection(conn: asyncpg.Connection):
 
 
 async def create_db_pool() -> asyncpg.Pool:
-    ssl_mode = "require" if config.db_ssl else None
     try:
         if config.database_url:
-            # Railway/Render: DATABASE_URL orqali to'g'ridan-to'g'ri ulanish
+            # Railway (yoki boshqa hosting) avtomatik bergan to'liq ulanish satri
             pool = await asyncpg.create_pool(
                 dsn=config.database_url,
                 min_size=1,
                 max_size=10,
                 init=_init_connection,
-                ssl=ssl_mode,
             )
         else:
-            # Lokal development: alohida-alohida DB_* qiymatlar
             pool = await asyncpg.create_pool(
                 user=config.db_user,
                 password=config.db_password,
                 host=config.db_host,
                 port=config.db_port,
                 database=config.db_name,
+                ssl="require" if config.db_ssl else None,
                 min_size=1,
                 max_size=10,
                 init=_init_connection,
-                ssl=ssl_mode,
             )
     except Exception as e:
         sys.exit(f"❌ PostgreSQL bazasiga ulanib bo'lmadi: {e}")
@@ -65,7 +57,7 @@ async def create_db_pool() -> asyncpg.Pool:
 
 
 async def init_db(pool: asyncpg.Pool):
-    """Barcha jadvallarni FK tartibida yaratadi va eski bazalarni yangi ustunlar bilan migratsiya qiladi."""
+    """TZ 3-bo'limdagi 4 ta jadvalni FK tartibida yaratadi."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("""
@@ -89,10 +81,10 @@ async def init_db(pool: asyncpg.Pool):
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            # Eski (chat_type ustunisiz) bazalarni ham xavfsiz migratsiya qilamiz
-            await conn.execute("""
-                ALTER TABLE channels ADD COLUMN IF NOT EXISTS chat_type VARCHAR(20) NOT NULL DEFAULT 'channel';
-            """)
+            # Eski deploy'larda ustun bo'lmasligi mumkin — bor bo'lsa hech narsa qilmaydi
+            await conn.execute(
+                "ALTER TABLE channels ADD COLUMN IF NOT EXISTS chat_type VARCHAR(20) NOT NULL DEFAULT 'channel';"
+            )
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS scheduled_posts (
                     post_id SERIAL PRIMARY KEY,
@@ -117,7 +109,7 @@ async def init_db(pool: asyncpg.Pool):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS bot_admins (
                     user_id BIGINT PRIMARY KEY,
-                    added_by BIGINT NOT NULL,
+                    added_by BIGINT,
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
@@ -141,20 +133,18 @@ async def upsert_user(pool: asyncpg.Pool, user_id: int, full_name: str, username
     )
 
 
-# ============ CHANNELS / GROUPS ============
-# Eslatma: "channels" jadvali ham kanallarni, ham guruhlarni saqlaydi — ularni
-# chat_type ustuni ('channel' | 'group') orqali ajratamiz.
+# ============ CHANNELS ============
 
 async def upsert_channel(
     pool: asyncpg.Pool, channel_id: int, owner_id: int, title: str, chat_type: str = "channel"
 ):
-    """Bot kanal/guruhga admin qilib qo'shilganda yoki title o'zgarganda chaqiriladi."""
+    """Bot kanalga/guruhga admin qilib qo'shilganda yoki title o'zgarganda chaqiriladi."""
     await pool.execute(
         """
         INSERT INTO channels (channel_id, owner_id, title, chat_type)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (channel_id) DO UPDATE
-        SET title = EXCLUDED.title, chat_type = EXCLUDED.chat_type;
+        SET title = EXCLUDED.title;
         """,
         channel_id, owner_id, title, chat_type,
     )
@@ -164,27 +154,10 @@ async def get_channel(pool: asyncpg.Pool, channel_id: int) -> Optional[asyncpg.R
     return await pool.fetchrow("SELECT * FROM channels WHERE channel_id = $1;", channel_id)
 
 
-async def get_user_channels(
-    pool: asyncpg.Pool, owner_id: int, chat_type: Optional[str] = None
-) -> list[asyncpg.Record]:
-    """chat_type berilsa ('channel' yoki 'group'), faqat shu turdagilar qaytariladi."""
-    if chat_type:
-        return await pool.fetch(
-            "SELECT * FROM channels WHERE owner_id = $1 AND chat_type = $2 ORDER BY created_at DESC;",
-            owner_id, chat_type,
-        )
+async def get_user_channels(pool: asyncpg.Pool, owner_id: int) -> list[asyncpg.Record]:
     return await pool.fetch(
         "SELECT * FROM channels WHERE owner_id = $1 ORDER BY created_at DESC;", owner_id
     )
-
-
-async def get_all_chats(pool: asyncpg.Pool, chat_type: Optional[str] = None) -> list[asyncpg.Record]:
-    """Broadcast uchun: barcha ro'yxatdan o'tgan kanal/guruhlar (istalgan egadan)."""
-    if chat_type:
-        return await pool.fetch(
-            "SELECT * FROM channels WHERE chat_type = $1 ORDER BY created_at DESC;", chat_type
-        )
-    return await pool.fetch("SELECT * FROM channels ORDER BY created_at DESC;")
 
 
 async def toggle_auto_approve(pool: asyncpg.Pool, channel_id: int) -> bool:
@@ -201,12 +174,6 @@ async def toggle_auto_approve(pool: asyncpg.Pool, channel_id: int) -> bool:
 
 
 async def set_welcome_message(pool: asyncpg.Pool, channel_id: int, text: str):
-    """
-    Eslatma: welcome_message ustuni bazada saqlanadi (kelajakda kerak bo'lishi mumkin),
-    lekin TZ talabiga ko'ra join-request oqimida foydalanuvchiga hech qachon DM
-    sifatida yuborilmaydi (auto-approve butunlay SILENT). Shuning uchun bu funksiya
-    hozirda hech bir handlerdan chaqirilmaydi.
-    """
     await pool.execute(
         "UPDATE channels SET welcome_message = $1 WHERE channel_id = $2;", text, channel_id
     )
@@ -271,9 +238,28 @@ async def mark_post_published(pool: asyncpg.Pool, post_id: int):
     )
 
 
-# ============ BOT ADMINS (Broadcast ruxsatlari) ============
-# ADMIN_ID (.env) — "super admin", har doim ruxsati bor va shu jadvaldan mustaqil ishlaydi.
-# bot_admins — super admin tomonidan /addadmin bilan qo'shilgan qo'shimcha adminlar.
+# ============ BROADCAST: ULANGAN CHATLAR ============
+
+async def get_all_chats(pool: asyncpg.Pool, chat_type: str) -> list[asyncpg.Record]:
+    """
+    chat_type == "channel" -> faqat kanallar
+    chat_type == "group"   -> guruh va supergruppalar
+    """
+    if chat_type == "group":
+        return await pool.fetch(
+            "SELECT * FROM channels WHERE chat_type IN ('group', 'supergroup') ORDER BY created_at DESC;"
+        )
+    return await pool.fetch(
+        "SELECT * FROM channels WHERE chat_type = 'channel' ORDER BY created_at DESC;"
+    )
+
+
+# ============ BOT ADMINS (broadcast huquqi) ============
+
+async def is_bot_admin(pool: asyncpg.Pool, user_id: int) -> bool:
+    row = await pool.fetchrow("SELECT 1 FROM bot_admins WHERE user_id = $1;", user_id)
+    return row is not None
+
 
 async def add_bot_admin(pool: asyncpg.Pool, user_id: int, added_by: int):
     await pool.execute(
@@ -288,14 +274,8 @@ async def add_bot_admin(pool: asyncpg.Pool, user_id: int, added_by: int):
 
 async def remove_bot_admin(pool: asyncpg.Pool, user_id: int) -> bool:
     result = await pool.execute("DELETE FROM bot_admins WHERE user_id = $1;", user_id)
-    # asyncpg "DELETE N" ko'rinishida qaytaradi
-    return result.split()[-1] != "0"
+    return result.endswith("1")  # "DELETE 1" -> o'chirildi, "DELETE 0" -> topilmadi
 
 
 async def list_bot_admins(pool: asyncpg.Pool) -> list[asyncpg.Record]:
     return await pool.fetch("SELECT * FROM bot_admins ORDER BY added_at ASC;")
-
-
-async def is_bot_admin(pool: asyncpg.Pool, user_id: int) -> bool:
-    row = await pool.fetchrow("SELECT 1 FROM bot_admins WHERE user_id = $1;", user_id)
-    return row is not None
