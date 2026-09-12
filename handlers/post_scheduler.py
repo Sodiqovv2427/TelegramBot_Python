@@ -19,6 +19,8 @@ from keyboards import (
     NewPostChannelCB,
     NewPostTypeCB,
     PostConfirmCB,
+    CHANNEL_NEWPOST_BTN,
+    GROUP_NEWPOST_BTN,
     newpost_type_kb,
     channels_choice_kb,
     post_confirm_kb,
@@ -63,7 +65,7 @@ def parse_publish_time(raw: str) -> datetime | None:
 
 
 async def _start_new_post(state: FSMContext, answer_func):
-    """/newpost buyrug'i va ✍️ tezkor tugma bir xil oqimni boshlashi uchun umumiy logika."""
+    """/newpost buyrug'i uchun — avval kanalgami yoki guruhgami ekanini so'raydi."""
     await state.set_state(PostCreation.choosing_type)
     await answer_func("📢 Postni qayerga joylashtirmoqchisiz?", reply_markup=newpost_type_kb())
 
@@ -73,15 +75,33 @@ async def start_new_post(message: Message, state: FSMContext):
     await _start_new_post(state, message.answer)
 
 
-@router.callback_query(F.data == "btn_newpost")
-async def btn_newpost(callback: CallbackQuery, state: FSMContext):
-    await _start_new_post(state, callback.message.answer)
-    await callback.answer()
+async def _show_channels_for_post(
+    db_pool: asyncpg.Pool, user_id: int, chat_type: str, state: FSMContext, answer_func
+):
+    """Tur allaqachon ma'lum bo'lganda (pastki tugma orqali) to'g'ridan-to'g'ri kanal/guruh ro'yxatini ko'rsatadi."""
+    channels = await db.get_user_channels_by_type(db_pool, user_id, chat_type)
+    label = "kanal" if chat_type == "channel" else "guruh"
+
+    if not channels:
+        await answer_func(
+            f"Sizda ulangan {label} topilmadi.\n\n"
+            f"Avval botni {label}ingizga <b>administrator</b> qilib qo'shing, yoki agar allaqachon "
+            f"qo'shgan bo'lsangiz-u, ro'yxatga tushmagan bo'lsa — /addchannel buyrug'idan foydalaning."
+        )
+        return
+
+    await state.set_state(PostCreation.choosing_channel)
+    await answer_func(f"📢 Qaysi {label}ga post joylashtiramiz?", reply_markup=channels_choice_kb(channels))
 
 
-@router.message(F.text == "✍️ Yangi post")
-async def reply_kb_newpost(message: Message, state: FSMContext):
-    await _start_new_post(state, message.answer)
+@router.message(F.text == CHANNEL_NEWPOST_BTN)
+async def reply_kb_newpost_channel(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
+    await _show_channels_for_post(db_pool, message.from_user.id, "channel", state, message.answer)
+
+
+@router.message(F.text == GROUP_NEWPOST_BTN)
+async def reply_kb_newpost_group(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
+    await _show_channels_for_post(db_pool, message.from_user.id, "group", state, message.answer)
 
 
 @router.callback_query(PostCreation.choosing_type, NewPostTypeCB.filter())

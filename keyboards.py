@@ -32,14 +32,19 @@ class BroadcastConfirmCB(CallbackData, prefix="bc"):
 CHANNEL_BROADCAST_BTN = "📣 Kanalga e'lon yuborish"
 GROUP_BROADCAST_BTN = "💬 Guruhga e'lon yuborish"
 
+# /newpost uchun reply-keyboard tugma matnlari (post_scheduler.py shu bilan solishtiradi)
+CHANNEL_NEWPOST_BTN = "📤 Kanalga post yuborish"
+GROUP_NEWPOST_BTN = "📤 Guruhga post yuborish"
+
 
 # ============ Pastki (persistent) reply-keyboard ============
 
 def main_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     keyboard = [
-        [KeyboardButton(text="📢 Mening kanallarim"), KeyboardButton(text="✍️ Yangi post")],
-        [KeyboardButton(text="📊 Analitika"), KeyboardButton(text="⚙️ Sozlamalar")],
-        [KeyboardButton(text="👥 Referal"), KeyboardButton(text="ℹ️ Yordam")],
+        [KeyboardButton(text="📢 Mening kanallarim"), KeyboardButton(text="💬 Mening guruhlarim")],
+        [KeyboardButton(text=CHANNEL_NEWPOST_BTN), KeyboardButton(text=GROUP_NEWPOST_BTN)],
+        [KeyboardButton(text="📊 Analitika"), KeyboardButton(text="👥 Referal")],
+        [KeyboardButton(text="⚙️ Sozlamalar"), KeyboardButton(text="ℹ️ Yordam")],
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text=CHANNEL_BROADCAST_BTN), KeyboardButton(text=GROUP_BROADCAST_BTN)])
@@ -50,9 +55,9 @@ def main_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
 
 def start_menu_kb(bot_username: str) -> InlineKeyboardMarkup:
     """
-    /start javobiga qo'shiladigan inline klaviatura:
-    - Kanal/guruhga to'g'ridan-to'g'ri qo'shish tugmalari (startchannel/startgroup deep-link)
-    - Tezkor amallar: Mening kanallarim / Yangi post
+    /start javobiga qo'shiladigan inline klaviatura — faqat 2 ta tugma:
+    kanal/guruhga to'g'ridan-to'g'ri qo'shish (startchannel/startgroup deep-link).
+    Qolgan barcha amallar pastki (persistent) reply-keyboard'da.
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -65,10 +70,6 @@ def start_menu_kb(bot_username: str) -> InlineKeyboardMarkup:
                     text="💬 Guruhga qo'shish",
                     url=f"https://t.me/{bot_username}?startgroup=true",
                 ),
-            ],
-            [
-                InlineKeyboardButton(text="📋 Mening kanallarim", callback_data="btn_mychannels"),
-                InlineKeyboardButton(text="✍️ Yangi post", callback_data="btn_newpost"),
             ],
         ]
     )

@@ -173,19 +173,31 @@ async def add_channel_via_forward(message: Message, db_pool: asyncpg.Pool, bot: 
     await message.answer(text)
 
 
-async def _send_channels_list(db_pool: asyncpg.Pool, user_id: int, answer_func):
-    """/mychannels buyrug'i va 📋 tezkor tugma bir xil natijani ko'rsatishi uchun umumiy logika."""
-    channels = await db.get_user_channels(db_pool, user_id)
+async def _send_channels_list(
+    db_pool: asyncpg.Pool, user_id: int, answer_func, chat_type: str | None = None
+):
+    """
+    /mychannels va "Mening kanallarim"/"Mening guruhlarim" tugmalari uchun umumiy logika.
+    chat_type=None -> hammasi (kanal+guruh aralash), "channel" -> faqat kanallar, "group" -> faqat guruhlar.
+    """
+    if chat_type is None:
+        channels = await db.get_user_channels(db_pool, user_id)
+        label, label_title = "kanal/guruh", "kanal va guruhlaringiz"
+    else:
+        channels = await db.get_user_channels_by_type(db_pool, user_id, chat_type)
+        label = "kanal" if chat_type == "channel" else "guruh"
+        label_title = "kanallaringiz" if chat_type == "channel" else "guruhlaringiz"
+
     if not channels:
         await answer_func(
-            "Sizga tegishli kanallar topilmadi.\n\n"
-            "Meni istalgan kanalingizga <b>administrator</b> qilib qo'shing — avtomatik ro'yxatga olinaman.\n\n"
-            "Agar allaqachon admin qilib qo'shgan bo'lsangiz-u, shu yerda ko'rinmasa — "
-            "<code>/addchannel @username</code> buyrug'idan yoki kanaldan bir postni shu botga "
-            "forward qilishdan foydalaning."
+            f"Sizga tegishli {label} topilmadi.\n\n"
+            f"Meni istalgan {label}ingizga <b>administrator</b> qilib qo'shing — avtomatik ro'yxatga olinaman.\n\n"
+            f"Agar allaqachon admin qilib qo'shgan bo'lsangiz-u, shu yerda ko'rinmasa — "
+            f"<code>/addchannel @username</code> buyrug'idan yoki u yerdan bir postni shu botga "
+            f"forward qilishdan foydalaning."
         )
         return
-    await answer_func("📋 Sizning kanallaringiz:", reply_markup=channels_list_kb(channels))
+    await answer_func(f"📋 Sizning {label_title}:", reply_markup=channels_list_kb(channels))
 
 
 @router.message(Command("mychannels"))
@@ -193,16 +205,20 @@ async def my_channels(message: Message, db_pool: asyncpg.Pool):
     await _send_channels_list(db_pool, message.from_user.id, message.answer)
 
 
-@router.callback_query(F.data == "btn_mychannels")
-async def btn_mychannels(callback: CallbackQuery, db_pool: asyncpg.Pool):
-    await _send_channels_list(db_pool, callback.from_user.id, callback.message.answer)
-    await callback.answer()
+@router.message(F.text == "📢 Mening kanallarim")
+async def reply_kb_only_channels(message: Message, db_pool: asyncpg.Pool):
+    await _send_channels_list(db_pool, message.from_user.id, message.answer, chat_type="channel")
+
+
+@router.message(F.text == "💬 Mening guruhlarim")
+async def reply_kb_only_groups(message: Message, db_pool: asyncpg.Pool):
+    await _send_channels_list(db_pool, message.from_user.id, message.answer, chat_type="group")
 
 
 @router.callback_query(ChannelCB.filter(F.action == "back"))
 async def back_to_channels(callback: CallbackQuery, db_pool: asyncpg.Pool):
     channels = await db.get_user_channels(db_pool, callback.from_user.id)
-    await callback.message.edit_text("📋 Sizning kanallaringiz:", reply_markup=channels_list_kb(channels))
+    await callback.message.edit_text("📋 Sizning kanal va guruhlaringiz:", reply_markup=channels_list_kb(channels))
     await callback.answer()
 
 
@@ -259,11 +275,6 @@ async def save_welcome_text(message: Message, state: FSMContext, db_pool: asyncp
 
 # ============ Pastki reply-keyboard tugmalari ============
 
-@router.message(F.text == "📢 Mening kanallarim")
-async def reply_kb_mychannels(message: Message, db_pool: asyncpg.Pool):
-    await _send_channels_list(db_pool, message.from_user.id, message.answer)
-
-
 @router.message(F.text == "📊 Analitika")
 async def reply_kb_analytics(message: Message, db_pool: asyncpg.Pool):
     stats = await db.get_user_analytics(db_pool, message.from_user.id)
@@ -304,18 +315,19 @@ async def reply_kb_referral(message: Message, db_pool: asyncpg.Pool, bot: Bot):
 async def reply_kb_help(message: Message):
     await message.answer(
         "ℹ️ <b>Yordam — tugmalar nima qiladi</b>\n\n"
-        "📢 <b>Mening kanallarim</b> — ulangan kanal/guruhlaringiz ro'yxati; har birini bosib "
+        "📢 <b>Mening kanallarim</b> — ulangan kanallaringiz ro'yxati; har birini bosib "
         "auto-approve va welcome xabarni sozlashingiz mumkin\n\n"
-        "✍️ <b>Yangi post</b> — bitta tanlangan kanal yoki guruhga, belgilangan vaqtda (masalan "
-        "1 soatdan keyin) chiqadigan, ixtiyoriy inline tugmali post rejalashtirish\n\n"
+        "💬 <b>Mening guruhlarim</b> — ulangan guruhlaringiz ro'yxati, xuddi shu sozlamalar bilan\n\n"
+        "📤 <b>Kanalga / Guruhga post yuborish</b> — tanlangan bitta kanal yoki guruhga, "
+        "belgilangan vaqtda (masalan 1 soatdan keyin) chiqadigan, ixtiyoriy inline tugmali "
+        "post rejalashtirish\n\n"
         "📊 <b>Analitika</b> — kanal/guruhlaringiz, a'zolar va postlar bo'yicha statistika\n\n"
-        "⚙️ <b>Sozlamalar</b> — har bir kanalning auto-approve/welcome sozlamalarini boshqarish "
-        "(mychannels orqali)\n\n"
         "👥 <b>Referal</b> — do'stlaringizni botga taklif qilish havolasi va statistikasi\n\n"
+        "⚙️ <b>Sozlamalar</b> — har bir kanalning auto-approve/welcome sozlamalarini boshqarish\n\n"
         "<b>Buyruqlar:</b>\n"
         "/start — botni qayta ishga tushirish\n"
-        "/mychannels — ulangan kanallaringizni boshqarish\n"
-        "/newpost — yangi post rejalashtirish (kanalgami yoki guruhgami — bot so'raydi)\n"
+        "/mychannels — barcha ulangan kanal va guruhlaringiz (aralash ro'yxat)\n"
+        "/newpost — yangi post rejalashtirish\n"
         "/addchannel @username — kanalni qo'lda ro'yxatga qo'shish (avtomatik ishlamasa)\n\n"
         "<b>Boshlash uchun:</b> meni kanalingizga yoki guruhingizga <b>administrator</b> qilib qo'shing."
     )
