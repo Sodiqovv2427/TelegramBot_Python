@@ -8,8 +8,12 @@ import logging
 
 import asyncpg
 from aiogram import Router, F, Bot
-from aiogram.filters import Command, CommandStart, ChatMemberUpdatedFilter, ADMINISTRATOR, IS_NOT_MEMBER
+from aiogram.filters import (
+    Command, CommandStart, CommandObject, StateFilter,
+    ChatMemberUpdatedFilter, ADMINISTRATOR, IS_NOT_MEMBER,
+)
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import ChatMemberUpdated, Message, CallbackQuery
 
 import database as db
@@ -42,10 +46,18 @@ START_TEXT_TEMPLATE = (
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, db_pool: asyncpg.Pool, bot: Bot):
+async def cmd_start(message: Message, db_pool: asyncpg.Pool, bot: Bot, command: CommandObject):
     """Bot bilan birinchi tanishuv. Foydalanuvchini bazaga yozadi va menyular bilan javob beradi."""
+    # Referal deep-link: https://t.me/<bot>?start=<referrer_id>
+    referrer_id = None
+    if command.args and command.args.isdigit():
+        candidate = int(command.args)
+        if candidate != message.from_user.id:
+            referrer_id = candidate
+
     await db.upsert_user(
-        db_pool, message.from_user.id, message.from_user.full_name, message.from_user.username
+        db_pool, message.from_user.id, message.from_user.full_name, message.from_user.username,
+        referrer_id=referrer_id,
     )
     logger.info("👋 /start bosdi: %s (id=%s)", message.from_user.full_name, message.from_user.id)
 
@@ -104,14 +116,73 @@ async def bot_promoted_to_admin(event: ChatMemberUpdated, db_pool: asyncpg.Pool)
         pass
 
 
+async def _register_channel_if_admin(
+    bot: Bot, db_pool: asyncpg.Pool, chat_id_or_username, requester_id: int,
+    requester_name: str, requester_username: str | None,
+) -> tuple[bool, str]:
+    """
+    Berilgan chat (ID yoki @username) uchun botning admin ekanligini tekshiradi va shunday bo'lsa
+    ro'yxatga oladi. (ok, xabar) qaytaradi.
+    """
+    try:
+        chat = await bot.get_chat(chat_id_or_username)
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        return False, f"❌ Chat topilmadi: {e}"
+
+    if chat.type not in ("channel", "group", "supergroup"):
+        return False, "❌ Bu shaxsiy chat — faqat kanal yoki guruhni qo'shish mumkin."
+
+    try:
+        member = await bot.get_chat_member(chat.id, bot.id)
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        return False, f"❌ Bot holatini tekshirib bo'lmadi (bot u yerga umuman qo'shilmagan bo'lishi mumkin): {e}"
+
+    if member.status != "administrator":
+        return False, f"❌ Bot <b>{chat.title}</b>da administrator emas. Avval admin huquqini bering."
+
+    await db.upsert_user(db_pool, requester_id, requester_name, requester_username)
+    await db.upsert_channel(db_pool, chat.id, requester_id, chat.title or str(chat.id), chat_type=chat.type)
+    logger.info("✅ Qo'lda ro'yxatga olindi: %s (id=%s, owner=%s)", chat.title, chat.id, requester_id)
+    return True, f"✅ <b>{chat.title}</b> muvaffaqiyatli ulandi!"
+
+
+@router.message(Command("addchannel"))
+async def add_channel_cmd(message: Message, db_pool: asyncpg.Pool, bot: Bot):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) != 2:
+        await message.answer(
+            "Kanalingiz avtomatik ro'yxatga tushmagan bo'lsa, shu orqali qo'lda qo'shing:\n\n"
+            "<code>/addchannel @kanal_username</code>\n\n"
+            "Yoki kanal/guruhdan istalgan postni to'g'ridan-to'g'ri shu botga <b>forward</b> qiling."
+        )
+        return
+    ok, text = await _register_channel_if_admin(
+        bot, db_pool, parts[1].strip(),
+        message.from_user.id, message.from_user.full_name, message.from_user.username,
+    )
+    await message.answer(text)
+
+
+@router.message(StateFilter(None), F.forward_from_chat)
+async def add_channel_via_forward(message: Message, db_pool: asyncpg.Pool, bot: Bot):
+    fwd_chat = message.forward_from_chat
+    ok, text = await _register_channel_if_admin(
+        bot, db_pool, fwd_chat.id,
+        message.from_user.id, message.from_user.full_name, message.from_user.username,
+    )
+    await message.answer(text)
+
+
 async def _send_channels_list(db_pool: asyncpg.Pool, user_id: int, answer_func):
     """/mychannels buyrug'i va 📋 tezkor tugma bir xil natijani ko'rsatishi uchun umumiy logika."""
     channels = await db.get_user_channels(db_pool, user_id)
     if not channels:
         await answer_func(
-            "Sizga tegishli kanallar topilmadi.\n"
-            "Meni istalgan kanalingizga <b>administrator</b> qilib qo'shing — "
-            "avtomatik ro'yxatga olinaman."
+            "Sizga tegishli kanallar topilmadi.\n\n"
+            "Meni istalgan kanalingizga <b>administrator</b> qilib qo'shing — avtomatik ro'yxatga olinaman.\n\n"
+            "Agar allaqachon admin qilib qo'shgan bo'lsangiz-u, shu yerda ko'rinmasa — "
+            "<code>/addchannel @username</code> buyrug'idan yoki kanaldan bir postni shu botga "
+            "forward qilishdan foydalaning."
         )
         return
     await answer_func("📋 Sizning kanallaringiz:", reply_markup=channels_list_kb(channels))
@@ -194,30 +265,57 @@ async def reply_kb_mychannels(message: Message, db_pool: asyncpg.Pool):
 
 
 @router.message(F.text == "📊 Analitika")
-async def reply_kb_analytics(message: Message):
-    await message.answer("📊 Analitika bo'limi tez orada qo'shiladi.")
+async def reply_kb_analytics(message: Message, db_pool: asyncpg.Pool):
+    stats = await db.get_user_analytics(db_pool, message.from_user.id)
+    await message.answer(
+        "📊 <b>Sizning statistikangiz</b>\n\n"
+        f"📢 Kanallar: <b>{stats['channels_count']}</b> ta\n"
+        f"💬 Guruhlar: <b>{stats['groups_count']}</b> ta\n"
+        f"👥 Jami qo'shilgan a'zolar: <b>{stats['total_joins']}</b> ta\n"
+        f"🗓 Rejalashtirilgan postlar (kutilmoqda): <b>{stats['posts_scheduled']}</b> ta\n"
+        f"✅ Yuborilgan postlar: <b>{stats['posts_published']}</b> ta"
+    )
 
 
 @router.message(F.text == "⚙️ Sozlamalar")
 async def reply_kb_settings(message: Message):
     await message.answer(
-        "⚙️ Umumiy sozlamalar bo'limi tez orada qo'shiladi.\n"
-        "Hozircha /mychannels orqali har bir kanal sozlamalarini (auto-approve, welcome xabar) "
-        "alohida boshqarishingiz mumkin."
+        "⚙️ <b>Sozlamalar</b>\n\n"
+        "Har bir kanal/guruh sozlamalari alohida boshqariladi — /mychannels orqali kerakli "
+        "kanalni tanlang, u yerda quyidagilarni o'zgartira olasiz:\n\n"
+        "• <b>Auto-approve</b> — qo'shilish so'rovlarini avtomatik tasdiqlash (yoqish/o'chirish)\n"
+        "• <b>Welcome xabar</b> — yangi a'zoga shaxsiy yuboriladigan matnni tahrirlash"
     )
 
 
 @router.message(F.text == "👥 Referal")
-async def reply_kb_referral(message: Message):
-    await message.answer("👥 Referal tizimi tez orada qo'shiladi.")
+async def reply_kb_referral(message: Message, db_pool: asyncpg.Pool, bot: Bot):
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+    count = await db.count_referrals(db_pool, message.from_user.id)
+    await message.answer(
+        f"👥 <b>Do'stlaringizni taklif qiling</b>\n\n"
+        f"Sizning shaxsiy havolangiz:\n<code>{ref_link}</code>\n\n"
+        f"📊 Siz orqali botga qo'shilganlar: <b>{count}</b> ta"
+    )
 
 
 @router.message(F.text == "ℹ️ Yordam")
 async def reply_kb_help(message: Message):
     await message.answer(
-        "ℹ️ <b>Yordam</b>\n\n"
+        "ℹ️ <b>Yordam — tugmalar nima qiladi</b>\n\n"
+        "📢 <b>Mening kanallarim</b> — ulangan kanal/guruhlaringiz ro'yxati; har birini bosib "
+        "auto-approve va welcome xabarni sozlashingiz mumkin\n\n"
+        "✍️ <b>Yangi post</b> — bitta tanlangan kanal yoki guruhga, belgilangan vaqtda (masalan "
+        "1 soatdan keyin) chiqadigan, ixtiyoriy inline tugmali post rejalashtirish\n\n"
+        "📊 <b>Analitika</b> — kanal/guruhlaringiz, a'zolar va postlar bo'yicha statistika\n\n"
+        "⚙️ <b>Sozlamalar</b> — har bir kanalning auto-approve/welcome sozlamalarini boshqarish "
+        "(mychannels orqali)\n\n"
+        "👥 <b>Referal</b> — do'stlaringizni botga taklif qilish havolasi va statistikasi\n\n"
+        "<b>Buyruqlar:</b>\n"
         "/start — botni qayta ishga tushirish\n"
         "/mychannels — ulangan kanallaringizni boshqarish\n"
-        "/newpost — yangi post rejalashtirish\n\n"
-        "Boshlash uchun meni kanalingizga administrator qilib qo'shing."
+        "/newpost — yangi post rejalashtirish (kanalgami yoki guruhgami — bot so'raydi)\n"
+        "/addchannel @username — kanalni qo'lda ro'yxatga qo'shish (avtomatik ishlamasa)\n\n"
+        "<b>Boshlash uchun:</b> meni kanalingizga yoki guruhingizga <b>administrator</b> qilib qo'shing."
     )

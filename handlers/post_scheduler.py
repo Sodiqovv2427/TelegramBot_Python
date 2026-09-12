@@ -17,7 +17,9 @@ from aiogram.types import Message, CallbackQuery
 import database as db
 from keyboards import (
     NewPostChannelCB,
+    NewPostTypeCB,
     PostConfirmCB,
+    newpost_type_kb,
     channels_choice_kb,
     post_confirm_kb,
     build_post_inline_keyboard,
@@ -60,26 +62,49 @@ def parse_publish_time(raw: str) -> datetime | None:
         return None
 
 
-async def _start_new_post(db_pool: asyncpg.Pool, user_id: int, state: FSMContext, answer_func):
+async def _start_new_post(state: FSMContext, answer_func):
     """/newpost buyrug'i va ✍️ tezkor tugma bir xil oqimni boshlashi uchun umumiy logika."""
-    channels = await db.get_user_channels(db_pool, user_id)
-    if not channels:
-        await answer_func(
-            "Sizda ulangan kanal yo'q. Avval botni kanalingizga admin qilib qo'shing."
-        )
-        return
-    await state.set_state(PostCreation.choosing_channel)
-    await answer_func("📢 Qaysi kanalga post joylashtiramiz?", reply_markup=channels_choice_kb(channels))
+    await state.set_state(PostCreation.choosing_type)
+    await answer_func("📢 Postni qayerga joylashtirmoqchisiz?", reply_markup=newpost_type_kb())
 
 
 @router.message(Command("newpost"))
-async def start_new_post(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
-    await _start_new_post(db_pool, message.from_user.id, state, message.answer)
+async def start_new_post(message: Message, state: FSMContext):
+    await _start_new_post(state, message.answer)
 
 
 @router.callback_query(F.data == "btn_newpost")
-async def btn_newpost(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
-    await _start_new_post(db_pool, callback.from_user.id, state, callback.message.answer)
+async def btn_newpost(callback: CallbackQuery, state: FSMContext):
+    await _start_new_post(state, callback.message.answer)
+    await callback.answer()
+
+
+@router.message(F.text == "✍️ Yangi post")
+async def reply_kb_newpost(message: Message, state: FSMContext):
+    await _start_new_post(state, message.answer)
+
+
+@router.callback_query(PostCreation.choosing_type, NewPostTypeCB.filter())
+async def post_type_chosen(
+    callback: CallbackQuery, callback_data: NewPostTypeCB, state: FSMContext, db_pool: asyncpg.Pool
+):
+    chat_type = callback_data.chat_type
+    channels = await db.get_user_channels_by_type(db_pool, callback.from_user.id, chat_type)
+    label = "kanal" if chat_type == "channel" else "guruh"
+
+    if not channels:
+        await callback.message.edit_text(
+            f"Sizda ulangan {label} topilmadi.\n\n"
+            f"Avval botni {label}ingizga <b>administrator</b> qilib qo'shing, yoki agar allaqachon "
+            f"qo'shgan bo'lsangiz-u, ro'yxatga tushmagan bo'lsa — /addchannel buyrug'idan foydalaning."
+        )
+        await callback.answer()
+        return
+
+    await state.set_state(PostCreation.choosing_channel)
+    await callback.message.edit_text(
+        f"📢 Qaysi {label}ga post joylashtiramiz?", reply_markup=channels_choice_kb(channels)
+    )
     await callback.answer()
 
 

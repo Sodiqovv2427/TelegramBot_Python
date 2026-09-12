@@ -16,6 +16,10 @@ class NewPostChannelCB(CallbackData, prefix="np"):
     channel_id: int
 
 
+class NewPostTypeCB(CallbackData, prefix="npt"):
+    chat_type: str  # "channel" | "group"
+
+
 class PostConfirmCB(CallbackData, prefix="pc"):
     action: str  # "confirm" | "cancel"
 
@@ -100,6 +104,14 @@ def channel_dashboard_kb(channel) -> InlineKeyboardMarkup:
 
 
 # ============ /newpost ============
+
+def newpost_type_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📢 Kanalga", callback_data=NewPostTypeCB(chat_type="channel"))
+    builder.button(text="💬 Guruhga", callback_data=NewPostTypeCB(chat_type="group"))
+    builder.adjust(2)
+    return builder.as_markup()
+
 
 def channels_choice_kb(channels: Iterable) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()

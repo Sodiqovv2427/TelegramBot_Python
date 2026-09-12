@@ -2,6 +2,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class PostCreation(StatesGroup):
+    choosing_type = State()
     choosing_channel = State()
     waiting_content = State()
     waiting_buttons = State()

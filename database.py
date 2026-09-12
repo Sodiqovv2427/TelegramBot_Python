@@ -69,6 +69,10 @@ async def init_db(pool: asyncpg.Pool):
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            # Referal tizimi uchun — eski deploy'larda ustun bo'lmasligi mumkin
+            await conn.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL;"
+            )
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS channels (
                     channel_id BIGINT PRIMARY KEY,
@@ -121,16 +125,27 @@ async def init_db(pool: asyncpg.Pool):
 
 # ============ USERS ============
 
-async def upsert_user(pool: asyncpg.Pool, user_id: int, full_name: str, username: Optional[str]):
+async def upsert_user(
+    pool: asyncpg.Pool, user_id: int, full_name: str, username: Optional[str],
+    referrer_id: Optional[int] = None,
+):
+    """
+    referrer_id faqat foydalanuvchi BIRINCHI marta yaratilganda yoziladi
+    (ON CONFLICT holatida unga tegilmaydi — referal "o'g'irlanib" ketmasligi uchun).
+    """
     await pool.execute(
         """
-        INSERT INTO users (user_id, full_name, username)
-        VALUES ($1, $2, $3)
+        INSERT INTO users (user_id, full_name, username, referrer_id)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (user_id) DO UPDATE
         SET full_name = EXCLUDED.full_name, username = EXCLUDED.username;
         """,
-        user_id, full_name, username,
+        user_id, full_name, username, referrer_id,
     )
+
+
+async def count_referrals(pool: asyncpg.Pool, user_id: int) -> int:
+    return await pool.fetchval("SELECT COUNT(*) FROM users WHERE referrer_id = $1;", user_id)
 
 
 # ============ CHANNELS ============
@@ -157,6 +172,28 @@ async def get_channel(pool: asyncpg.Pool, channel_id: int) -> Optional[asyncpg.R
 async def get_user_channels(pool: asyncpg.Pool, owner_id: int) -> list[asyncpg.Record]:
     return await pool.fetch(
         "SELECT * FROM channels WHERE owner_id = $1 ORDER BY created_at DESC;", owner_id
+    )
+
+
+async def get_user_channels_by_type(
+    pool: asyncpg.Pool, owner_id: int, chat_type: str
+) -> list[asyncpg.Record]:
+    """
+    chat_type == "channel" -> foydalanuvchining faqat kanallari
+    chat_type == "group"   -> foydalanuvchining guruh/supergruppalari
+    """
+    if chat_type == "group":
+        return await pool.fetch(
+            """
+            SELECT * FROM channels
+            WHERE owner_id = $1 AND chat_type IN ('group', 'supergroup')
+            ORDER BY created_at DESC;
+            """,
+            owner_id,
+        )
+    return await pool.fetch(
+        "SELECT * FROM channels WHERE owner_id = $1 AND chat_type = 'channel' ORDER BY created_at DESC;",
+        owner_id,
     )
 
 
@@ -279,3 +316,49 @@ async def remove_bot_admin(pool: asyncpg.Pool, user_id: int) -> bool:
 
 async def list_bot_admins(pool: asyncpg.Pool) -> list[asyncpg.Record]:
     return await pool.fetch("SELECT * FROM bot_admins ORDER BY added_at ASC;")
+
+
+# ============ ANALITIKA ============
+
+async def get_user_analytics(pool: asyncpg.Pool, owner_id: int) -> dict:
+    channels_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM channels WHERE owner_id = $1 AND chat_type = 'channel';", owner_id
+    )
+    groups_count = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM channels
+        WHERE owner_id = $1 AND chat_type IN ('group', 'supergroup');
+        """,
+        owner_id,
+    )
+    total_joins = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM join_requests jr
+        JOIN channels c ON c.channel_id = jr.channel_id
+        WHERE c.owner_id = $1;
+        """,
+        owner_id,
+    )
+    posts_scheduled = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM scheduled_posts sp
+        JOIN channels c ON c.channel_id = sp.channel_id
+        WHERE c.owner_id = $1 AND sp.is_published = FALSE;
+        """,
+        owner_id,
+    )
+    posts_published = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM scheduled_posts sp
+        JOIN channels c ON c.channel_id = sp.channel_id
+        WHERE c.owner_id = $1 AND sp.is_published = TRUE;
+        """,
+        owner_id,
+    )
+    return {
+        "channels_count": channels_count,
+        "groups_count": groups_count,
+        "total_joins": total_joins,
+        "posts_scheduled": posts_scheduled,
+        "posts_published": posts_published,
+    }
