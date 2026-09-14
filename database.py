@@ -79,15 +79,19 @@ async def init_db(pool: asyncpg.Pool):
                     owner_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
                     title VARCHAR(255) NOT NULL,
                     chat_type VARCHAR(20) NOT NULL DEFAULT 'channel',
+                    member_count INT DEFAULT 0,
                     auto_approve BOOLEAN DEFAULT TRUE,
                     welcome_message TEXT,
                     welcome_media_id VARCHAR(255),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            # Eski deploy'larda ustun bo'lmasligi mumkin — bor bo'lsa hech narsa qilmaydi
+            # Eski deploy'larda ustunlar bo'lmasligi mumkin — bor bo'lsa hech narsa qilmaydi
             await conn.execute(
                 "ALTER TABLE channels ADD COLUMN IF NOT EXISTS chat_type VARCHAR(20) NOT NULL DEFAULT 'channel';"
+            )
+            await conn.execute(
+                "ALTER TABLE channels ADD COLUMN IF NOT EXISTS member_count INT DEFAULT 0;"
             )
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS scheduled_posts (
@@ -151,17 +155,29 @@ async def count_referrals(pool: asyncpg.Pool, user_id: int) -> int:
 # ============ CHANNELS ============
 
 async def upsert_channel(
-    pool: asyncpg.Pool, channel_id: int, owner_id: int, title: str, chat_type: str = "channel"
+    pool: asyncpg.Pool, channel_id: int, owner_id: int, title: str,
+    chat_type: str = "channel", member_count: int | None = None,
 ):
-    """Bot kanalga/guruhga admin qilib qo'shilganda yoki title o'zgarganda chaqiriladi."""
+    """Bot kanalga/guruhga admin qilib qo'shilganda yoki title/a'zolar soni o'zgarganda chaqiriladi."""
     await pool.execute(
         """
-        INSERT INTO channels (channel_id, owner_id, title, chat_type)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO channels (channel_id, owner_id, title, chat_type, member_count)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (channel_id) DO UPDATE
-        SET title = EXCLUDED.title;
+        SET title = EXCLUDED.title,
+            member_count = COALESCE(EXCLUDED.member_count, channels.member_count);
         """,
-        channel_id, owner_id, title, chat_type,
+        channel_id, owner_id, title, chat_type, member_count,
+    )
+    # CACHE INVALIDATION: ma'lumot o'zgargani uchun eski keshni o'chiramiz —
+    # aks holda keyingi so'rov hali eski (stale) ro'yxatni qaytarib turaveradi.
+    from cache import cache_delete
+    await cache_delete(f"user_channels:{owner_id}")
+
+
+async def update_member_count(pool: asyncpg.Pool, channel_id: int, member_count: int):
+    await pool.execute(
+        "UPDATE channels SET member_count = $1 WHERE channel_id = $2;", member_count, channel_id
     )
 
 
@@ -173,7 +189,6 @@ async def get_user_channels(pool: asyncpg.Pool, owner_id: int) -> list[asyncpg.R
     return await pool.fetch(
         "SELECT * FROM channels WHERE owner_id = $1 ORDER BY created_at DESC;", owner_id
     )
-
 
 async def get_user_channels_by_type(
     pool: asyncpg.Pool, owner_id: int, chat_type: str
@@ -195,6 +210,34 @@ async def get_user_channels_by_type(
         "SELECT * FROM channels WHERE owner_id = $1 AND chat_type = 'channel' ORDER BY created_at DESC;",
         owner_id,
     )
+
+
+async def get_user_channels_cached(pool: asyncpg.Pool, owner_id: int) -> list[dict]:
+    """
+    CACHE-ASIDE PATTERN MISOLI:
+      1) Avval Redis'dan o'qishga harakat qilamiz (tez, bazaga tegmaydi)
+      2) Kesh bo'sh bo'lsa ("miss") — PostgreSQL'dan o'qiymiz
+      3) Natijani keyingi so'rovlar uchun Redis'ga TTL bilan yozib qo'yamiz ("aside")
+
+    Muhim: bu funksiya list[asyncpg.Record] emas, list[dict] qaytaradi — chunki Record
+    JSON'ga to'g'ridan-to'g'ri serialize bo'lmaydi, keshga yozishdan oldin dict'ga o'giramiz.
+    Shu sababli get_user_channels() (Record qaytaradigan) alohida saqlanib qoldi — u yerda
+    kod hali ham `row["title"]` kabi Record-stil murojaat qiladi.
+    """
+    from cache import cache_get, cache_set  # aylanma import'dan qochish uchun shu yerda
+
+    cache_key = f"user_channels:{owner_id}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached  # CACHE HIT — bazaga umuman tegmadik
+
+    # CACHE MISS — PostgreSQL'dan o'qiymiz
+    rows = await get_user_channels(pool, owner_id)
+    result = [dict(row) for row in rows]
+
+    # Keyingi 60 soniya ichidagi so'rovlar uchun keshga yozamiz
+    await cache_set(cache_key, result, ttl=60)
+    return result
 
 
 async def toggle_auto_approve(pool: asyncpg.Pool, channel_id: int) -> bool:
@@ -355,10 +398,14 @@ async def get_user_analytics(pool: asyncpg.Pool, owner_id: int) -> dict:
         """,
         owner_id,
     )
+    total_members = await pool.fetchval(
+        "SELECT COALESCE(SUM(member_count), 0) FROM channels WHERE owner_id = $1;", owner_id
+    )
     return {
         "channels_count": channels_count,
         "groups_count": groups_count,
         "total_joins": total_joins,
         "posts_scheduled": posts_scheduled,
         "posts_published": posts_published,
+        "total_members": total_members,
     }

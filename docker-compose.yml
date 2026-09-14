@@ -1,0 +1,80 @@
+services:
+  bot:
+    build: .
+    container_name: smm_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Compose ichida xizmatlar bir-biriga o'z NOMI orqali murojaat qiladi (localhost emas!)
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - smm_net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: smm_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - smm_net
+    # Lokal debugging uchun portni tashqariga chiqarish ixtiyoriy — production'da olib tashlang
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: smm_redis
+    restart: unless-stopped
+    # --maxmemory: xotira cheklovi (kesh cheksiz o'smasligi uchun)
+    # --maxmemory-policy allkeys-lru: xotira to'lganda eng kam ishlatilgan kalitlarni chiqarib tashlaydi
+    # --appendonly yes: restart bo'lganda ma'lumot (masalan FSM holatlari) yo'qolmasligi uchun persistence
+    #
+    # Eslatma: --requirepass ataylab qo'shilmagan, chunki Redis faqat ichki Docker tarmog'ida
+    # (smm_net) va faqat bot konteyneriga ochiq. Agar 6379-portni tashqariga (internetga) ochsangiz —
+    # pastdagi `command`ga `--requirepass ${REDIS_PASSWORD}` qo'shing va .env'da REDIS_PASSWORD'ni
+    # to'ldiring, shuningdek config.py buni avtomatik REDIS_URL/parolga qo'shib ishlatadi.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - smm_net
+    # Lokal debugging uchun portni tashqariga chiqarish ixtiyoriy — production'da olib tashlashni
+    # tavsiya qilamiz (Redis faqat bot konteyneriga kerak, tashqi internetga emas)
+    ports:
+      - "6379:6379"
+
+networks:
+  smm_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

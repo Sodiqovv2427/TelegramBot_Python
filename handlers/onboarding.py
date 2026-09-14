@@ -98,18 +98,41 @@ async def bot_promoted_to_admin(event: ChatMemberUpdated, db_pool: asyncpg.Pool)
         except Exception:
             pass  # foydalanuvchi botni PM'da bloklagan bo'lishi mumkin
 
+    # Bot o'zi qaysi chatga, qanday nom bilan qo'shilganini va nechta a'zo borligini aniqlaydi
+    try:
+        member_count = await event.bot.get_chat_member_count(event.chat.id)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        member_count = None
+
     owner_id = event.from_user.id
     await db.upsert_user(db_pool, owner_id, event.from_user.full_name, event.from_user.username)
     await db.upsert_channel(
         db_pool, event.chat.id, owner_id, event.chat.title or "Noma'lum kanal",
-        chat_type=event.chat.type,
+        chat_type=event.chat.type, member_count=member_count,
     )
 
-    logger.info("✅ Kanal ro'yxatga olindi: %s (id=%s, owner=%s)", event.chat.title, event.chat.id, owner_id)
+    label = "kanal" if event.chat.type == "channel" else "guruh"
+    logger.info(
+        "✅ %s ro'yxatga olindi: %s (id=%s, owner=%s, a'zolar=%s)",
+        label, event.chat.title, event.chat.id, owner_id, member_count,
+    )
+
+    # 1) Chatning O'ZIGA tabrik xabari (agar yozish huquqi bo'lsa)
+    try:
+        await event.bot.send_message(
+            event.chat.id,
+            "✅ Bot muvaffaqiyatli ulandi va ishga tayyor!\n"
+            "Sozlamalar uchun botga shaxsiy xabar yozing (/mychannels).",
+        )
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        logger.info("Chatning o'ziga xabar yuborib bo'lmadi (huquq yo'q): %s", e)
+
+    # 2) Egasiga (PM) tasdiqlash xabari — a'zolar soni bilan
+    count_line = f"\n👥 A'zolar soni: <b>{member_count}</b>" if member_count is not None else ""
     try:
         await event.bot.send_message(
             owner_id,
-            f"✅ <b>{event.chat.title}</b> muvaffaqiyatli ulandi!\n"
+            f"✅ <b>{event.chat.title}</b> ({label}) muvaffaqiyatli ulandi!{count_line}\n"
             f"Boshqarish uchun /mychannels buyrug'ini yuboring.",
         )
     except Exception:
@@ -140,10 +163,19 @@ async def _register_channel_if_admin(
     if member.status != "administrator":
         return False, f"❌ Bot <b>{chat.title}</b>da administrator emas. Avval admin huquqini bering."
 
+    try:
+        member_count = await bot.get_chat_member_count(chat.id)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        member_count = None
+
     await db.upsert_user(db_pool, requester_id, requester_name, requester_username)
-    await db.upsert_channel(db_pool, chat.id, requester_id, chat.title or str(chat.id), chat_type=chat.type)
+    await db.upsert_channel(
+        db_pool, chat.id, requester_id, chat.title or str(chat.id),
+        chat_type=chat.type, member_count=member_count,
+    )
     logger.info("✅ Qo'lda ro'yxatga olindi: %s (id=%s, owner=%s)", chat.title, chat.id, requester_id)
-    return True, f"✅ <b>{chat.title}</b> muvaffaqiyatli ulandi!"
+    count_line = f"\n👥 A'zolar soni: <b>{member_count}</b>" if member_count is not None else ""
+    return True, f"✅ <b>{chat.title}</b> muvaffaqiyatli ulandi!{count_line}"
 
 
 @router.message(Command("addchannel"))
@@ -228,8 +260,9 @@ async def open_channel_dashboard(callback: CallbackQuery, callback_data: Channel
     if not channel or channel["owner_id"] != callback.from_user.id:
         await callback.answer("Bu kanal sizga tegishli emas.", show_alert=True)
         return
+    count_line = f"\n👥 A'zolar soni: <b>{channel['member_count']}</b>" if channel["member_count"] else ""
     await callback.message.edit_text(
-        f"⚙️ <b>{channel['title']}</b> sozlamalari:",
+        f"⚙️ <b>{channel['title']}</b> sozlamalari:{count_line}",
         reply_markup=channel_dashboard_kb(channel),
     )
     await callback.answer()
@@ -282,7 +315,8 @@ async def reply_kb_analytics(message: Message, db_pool: asyncpg.Pool):
         "📊 <b>Sizning statistikangiz</b>\n\n"
         f"📢 Kanallar: <b>{stats['channels_count']}</b> ta\n"
         f"💬 Guruhlar: <b>{stats['groups_count']}</b> ta\n"
-        f"👥 Jami qo'shilgan a'zolar: <b>{stats['total_joins']}</b> ta\n"
+        f"👤 Jami a'zolar (kanal+guruhlaringizda): <b>{stats['total_members']}</b> ta\n"
+        f"👥 Bot orqali qo'shilganlar (join so'rovi): <b>{stats['total_joins']}</b> ta\n"
         f"🗓 Rejalashtirilgan postlar (kutilmoqda): <b>{stats['posts_scheduled']}</b> ta\n"
         f"✅ Yuborilgan postlar: <b>{stats['posts_published']}</b> ta"
     )

@@ -5,14 +5,10 @@ Texnik stek: Python 3.13, aiogram 3.x, asyncpg (PostgreSQL), APScheduler
 O'rnatish:
     pip install -r requirements.txt
 
-.env fayl kerak (.env.example ga qarang). Production'da (Render/Railway) DATABASE_URL
-platform tomonidan avtomatik beriladi — alohida DB_USER/DB_PASSWORD/DB_NAME shart emas.
+.env fayl kerak (.env.example ga qarang).
 
-Ishga tushirish (lokal):
+Ishga tushirish:
     python main.py
-
-Ishga tushirish (Render/Railway worker):
-    Procfile: worker: python main.py
 """
 
 import asyncio
@@ -21,11 +17,11 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from config import config
 from database import create_db_pool, init_db
+from cache import build_fsm_storage, close_redis_client, get_redis_client
 from middlewares import DbSessionMiddleware
 from handlers import main_router
 from scheduler import setup_scheduler
@@ -42,15 +38,29 @@ async def set_bot_commands(bot: Bot):
     """Telegram'ning chap-pastdagi Menu tugmasida ko'rinadigan buyruqlar ro'yxati."""
     commands = [
         BotCommand(command="start", description="Botni qayta ishga tushirish"),
-        BotCommand(command="mychats", description="Kanallar va guruhlarni boshqarish"),
-        BotCommand(command="newpost", description="Yangi post yaratish"),
+        BotCommand(command="mychannels", description="Ulangan kanallarni boshqarish"),
+        BotCommand(command="newpost", description="Yangi post rejalashtirish"),
     ]
     await bot.set_my_commands(commands)
 
 
 async def main():
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher(storage=MemoryStorage())
+
+    # FSM holatlari endi Redis'da saqlanadi — bot qayta ishga tushganda (deploy/crash)
+    # foydalanuvchining "post yaratish" kabi jarayondagi holati yo'qolmaydi.
+    storage = build_fsm_storage()
+    dp = Dispatcher(storage=storage)
+
+    # Redis ulanishini oldindan tekshirib olamiz — muammo bo'lsa botni boshida to'xtatamiz,
+    # keyinroq tasodifiy joyda tushunarsiz xato bermasin
+    try:
+        redis_client = await get_redis_client()
+        await redis_client.ping()
+        logger.info("✅ Redis ulanishi muvaffaqiyatli")
+    except Exception as e:
+        import sys
+        sys.exit(f"❌ Redis'ga ulanib bo'lmadi: {e}")
 
     db_pool = await create_db_pool()
     await init_db(db_pool)
@@ -65,29 +75,16 @@ async def main():
     scheduler = setup_scheduler(bot, db_pool)
     scheduler.start()
 
-    logger.info("-------------------------------------------")
-    logger.info("🤖 SMM & Channel Moderator bot ishga tushdi!")
-    logger.info("-------------------------------------------")
+    print("\n-------------------------------------------")
+    print("🤖 SMM & Channel Moderator bot ishga tushdi!")
+    print("-------------------------------------------\n")
 
     try:
-        # Eski navbatda qolgan spam yoki boshqa xabarlarni to'liq tozalash
-        await bot.delete_webhook(drop_pending_updates=True)
-
-        # chat_join_request, chat_member va media xabarlarini olish uchun allowed_updates
-        await dp.start_polling(
-            bot,
-            allowed_updates=[
-                "message",
-                "edited_message",
-                "chat_member",
-                "chat_join_request",
-                "callback_query",
-            ],
-            drop_pending_updates=True,
-        )
+        await dp.start_polling(bot)
     finally:
         scheduler.shutdown(wait=False)
         await db_pool.close()
+        await close_redis_client()
         await bot.session.close()
 
 
@@ -96,5 +93,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n⛔ Bot to'xtatildi.")
-        
-        
