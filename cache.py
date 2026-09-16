@@ -18,7 +18,7 @@ import json
 import logging
 from typing import Any, Optional
 
-import redis.asyncio as redis
+import redis.asynci as redis
 from aiogram.fsm.storage.redis import RedisStorage
 
 from config import config
