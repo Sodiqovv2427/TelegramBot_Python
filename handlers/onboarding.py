@@ -10,7 +10,7 @@ import asyncpg
 from aiogram import Router, F, Bot
 from aiogram.filters import (
     Command, CommandStart, CommandObject, StateFilter,
-    ChatMemberUpdatedFilter, ADMINISTRATOR, IS_NOT_MEMBER,
+    ChatMemberUpdatedFilter, ADMINISTRATOR, IS_NOT_MEMBER, IS_MEMBER,
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -72,7 +72,9 @@ async def cmd_start(message: Message, db_pool: asyncpg.Pool, bot: Bot, command: 
     )
 
 
-@router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> ADMINISTRATOR))
+@router.my_chat_member(
+    ChatMemberUpdatedFilter(member_status_changed=(IS_MEMBER | IS_NOT_MEMBER) >> ADMINISTRATOR)
+)
 async def bot_promoted_to_admin(event: ChatMemberUpdated, db_pool: asyncpg.Pool):
     """Bot biror kanal/guruhda administrator qilib tayinlanganda ishga tushadi."""
     new_member = event.new_chat_member
