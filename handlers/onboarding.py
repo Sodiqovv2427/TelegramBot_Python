@@ -17,7 +17,6 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import ChatMemberUpdated, Message, CallbackQuery
 
 import database as db
-from config import config
 from keyboards import (
     ChannelCB, channels_list_kb, channel_dashboard_kb, start_menu_kb, main_reply_keyboard,
 )
@@ -67,13 +66,9 @@ async def cmd_start(message: Message, db_pool: asyncpg.Pool, bot: Bot, command: 
         reply_markup=start_menu_kb(bot_info.username),
     )
 
-    is_admin = (
-        (config.admin_id is not None and message.from_user.id == config.admin_id)
-        or await db.is_bot_admin(db_pool, message.from_user.id)
-    )
     await message.answer(
         "Pastki menyudan foydalanishingiz mumkin 👇",
-        reply_markup=main_reply_keyboard(is_admin=is_admin),
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -213,7 +208,7 @@ async def _send_channels_list(
     chat_type=None -> hammasi (kanal+guruh aralash), "channel" -> faqat kanallar, "group" -> faqat guruhlar.
     """
     if chat_type is None:
-        channels = await db.get_user_channels(db_pool, user_id)
+        channels = await db.get_user_channels_cached(db_pool, user_id)  # Cache-Aside misoli
         label, label_title = "kanal/guruh", "kanal va guruhlaringiz"
     else:
         channels = await db.get_user_channels_by_type(db_pool, user_id, chat_type)
